@@ -1,0 +1,206 @@
+#!/bin/sh -e
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the the GNU General Public License version 3, as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranties of
+# MERCHANTABILITY, SATISFACTORY QUALITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the applicable version of the GNU General Public
+# License for more details.
+#.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Copyright (C) 2012 Canonical, Ltd.
+
+TESTSUITE=""
+TESTPACKAGES=""
+LOCALPACKAGES=""
+RESULTDIR=""
+ARTIFACTS=""
+
+ANDROID_SERIAL=""
+USER=phablet
+TARGET_IP=127.0.0.1
+SETUPDEVICE=0
+NOSHELL=0
+RETVAL=0
+
+print_usage() {
+    cat << EOF 
+usage: $0 [-s SERIAL] [-s] [-n] [-p PACKAGENAME] [-c PACKAGE] [-o DIR] [-a ARTIFACT] testsuite
+
+  Run the specified testsuite on the device
+
+  -s SERIAL        Device serial number
+  -i               Install test tools (autopilot)
+  -p PACKAGENAME   Additional package to be installed, may be used multiple times
+  -c PACKAGE       Copy and install local package to device, may be used multiple times
+  -n               Stop the shell during the test run
+  -o DIR           Test report and artifacts output dir
+  -a ARTIFACT      Artifact to fetch after the test, may be used multiple times (requires -o)
+EOF
+}
+
+wait_for_device() {
+    adb -s $ANDROID_SERIAL wait-for-device
+}
+
+exec_with_ssh() {
+    ssh -o NoHostAuthenticationForLocalhost=yes -t $USER@$TARGET_IP -p $TARGET_SSH_PORT "bash -ic \"source .cache/upstart/dbus-session; export DBUS_SESSION_BUS_ADDRESS; $@\""
+}
+
+exec_with_adb() {
+    adb -s $ANDROID_SERIAL shell /usr/bin/env -i PATH=/bin:/usr/bin:/sbin:/usr/sbin:/tools/bin "$@"
+}
+
+exec_with_adb_user() {
+    adb -s $ANDROID_SERIAL shell sudo -u $USER -i sh -lc \'"$@"\'
+}
+
+adb_root() {
+    adb root
+    adb wait-for-device
+}
+
+setup_adb_forwarding() {
+    TARGET_SSH_PORT=$(shuf -i 2000-65000 -n 1 | tr -d '\n\r')
+    adb -s $ANDROID_SERIAL forward tcp:$TARGET_SSH_PORT tcp:22
+    adb -s $ANDROID_SERIAL forward tcp:$TARGET_DEBUG_PORT tcp:$TARGET_DEBUG_PORT
+}
+
+clear_adb_forwarding() {
+    adb -s $ANDROID_SERIAL forward --remove "tcp:$TARGET_SSH_PORT"
+}
+
+install_packages() {
+
+    if test -n "$TESTPACKAGES"; then
+        exec_with_adb DEBIAN_FRONTEND=noninteractive apt-get -y -q install $TESTPACKAGES
+    fi
+
+    if test -n "$LOCALPACKAGES"; then
+        exec_with_adb mkdir -p /tmp/phablet-run-test/
+        exec_with_adb rm -rf /tmp/phablet-run-test/*
+        PACKAGELIST=""
+        for PACKAGEPATH in $LOCALPACKAGES; do
+            PACKAGE=$(basename $PACKAGEPATH)
+            echo "Pushing $PACKAGE..."
+            adb push $PACKAGEPATH /tmp/phablet-run-test/
+            PACKAGELIST="$PACKAGELIST /tmp/phablet-run-test/$PACKAGE"
+        done
+        exec_with_adb dpkg -i $PACKAGELIST
+    fi
+}
+
+disable_shell() {
+    exec_with_adb_user initctl stop unity8
+}
+
+restore_shell() {
+    exec_with_adb_user initctl start unity8
+}
+
+run_test() {
+    exec_with_adb chmod 666 /dev/uinput
+    set +e
+    if [ "$RESULTDIR" ]; then
+        exec_with_ssh autopilot run -o /tmp/test_results.xml -f xml $TESTSUITE
+        RETVAL=$?
+        echo "***** Test summary *****"
+        exec_with_adb head -n 1 /tmp/test_results.xml
+    else
+        exec_with_ssh autopilot run $TESTSUITE
+        RETVAL=$?
+    fi
+    set -e
+}
+
+fetch_artifacts() {
+    if [ "$RESULTDIR" ]; then
+        mkdir -p $RESULTDIR
+        echo "***** Artifacts ($RESULTDIR) *****"
+        set +e
+        scp -o NoHostAuthenticationForLocalhost=yes -P $TARGET_SSH_PORT $USER@$TARGET_IP:/tmp/test_results.xml $RESULTDIR
+        for artifact in $ARTIFACTS; do
+            scp -o NoHostAuthenticationForLocalhost=yes -P $TARGET_SSH_PORT $USER@$TARGET_IP:$artifact $RESULTDIR
+        done
+        set -e
+    fi
+}
+
+while getopts a:c:hino:p:s: opt; do
+    case $opt in
+    a)
+        ARTIFACTS="$ARTIFACTS $OPTARG"
+        ;;
+    c)
+        LOCALPACKAGES="$LOCALPACKAGES $OPTARG"
+        ;;
+    h)
+        print_usage
+        exit 0
+        ;;
+    i)
+        SETUPDEVICE=1
+        ;;
+    n)
+        NOSHELL=1
+        ;;
+    o)
+        RESULTDIR=$OPTARG
+        ;;
+    p)
+        TESTPACKAGES="$TESTPACKAGES $OPTARG"
+        ;;
+    s)
+        ANDROID_SERIAL=$OPTARG
+        ;;
+  esac
+done
+
+shift $((OPTIND - 1))
+
+TESTSUITE=$1
+
+if test -z $ANDROID_SERIAL; then
+    ANDROID_SERIAL=$(adb devices -l | grep usb | cut -f 1 -d " " | head -n1)
+fi
+export ANDROID_SERIAL=$ANDROID_SERIAL
+
+adb_root
+
+if [ $SETUPDEVICE -eq 1 ]; then
+    exec_with_adb add-apt-repository -y ppa:autopilot/ppa
+    exec_with_adb apt-get -qq update
+    exec_with_adb DEBIAN_FRONTEND=noninteractive apt-get -y -q install autopilot-touch
+
+fi
+
+if test -z $TESTSUITE; then
+    echo To run a test please specify a test suite
+    exit 0
+fi
+
+setup_adb_forwarding
+
+install_packages
+
+if [ $NOSHELL -eq 1 ]; then
+    echo "Disabling shell"
+    disable_shell
+fi
+
+run_test
+
+fetch_artifacts
+
+if [ $NOSHELL -eq 1 ]; then
+    echo "Restoring shell"
+    restore_shell
+fi
+
+clear_adb_forwarding
+
+exit $RETVAL

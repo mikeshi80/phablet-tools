@@ -1,0 +1,479 @@
+#! /usr/bin/python2.7
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the the GNU General Public License version 3, as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranties of
+# MERCHANTABILITY, SATISFACTORY QUALITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the applicable version of the GNU Lesser General Public
+# License for more details.
+#.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Copyright (C) 2013 Canonical, Ltd.
+
+import argparse
+import logging
+import os
+import re
+import requests
+import subprocess
+import tempfile
+import gzip
+from os import path
+from time import sleep
+from phabletutils.device import (AndroidBridge, Fastboot)
+from phabletutils import downloads
+from phabletutils import environment
+from phabletutils import cdimage
+from phabletutils import settings
+from phabletutils import ubuntuimage
+
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+log = logging.getLogger()
+log.name = 'phablet-deploy'
+
+
+def parse_arguments():
+    '''Parses arguments passed in to script.'''
+    parser = argparse.ArgumentParser(
+        description='''phablet flash tool.
+                       Grabs build from the network and deploys to device.
+                       Does best effort to deploy in different ways.''')
+    parser.add_argument('-d',
+                        '--device',
+                        help='''Target device to deploy.''',
+                        required=False,
+                        choices=settings.supported_devices,
+                       )
+    parser.add_argument('-s',
+                        '--serial',
+                        help='''Device serial. Use when more than
+                                one device is connected.''',
+                       )
+    parser.add_argument('--alternate-settings',
+                        help='''Alternate default settings (not common)''',
+                       )
+    parser.add_argument('--no-device-validate',
+                        action='store_true',
+                        default=False,
+                        help='''Skip device validation, use at risk.''',
+                       )
+    parser.add_argument('-b',
+                       '--bootstrap',
+                       help='''Bootstrap the target device, this only
+                               works on Nexus devices or devices that
+                               use fastboot and are unlocked. All user
+                               data is destroyed''',
+                       action='store_true',
+                      )
+    parser.add_argument('-D',
+                       '--download-only',
+                       help='''Download image only, but do not flash device.
+                               Use -d to override target device autodetection
+                               if target device is not connected.''',
+                       action='store_true',
+                      )
+    parser.add_argument('--wipe',
+                       help='''Cleans up all data.''',
+                       action='store_true',
+                      )
+    parser.add_argument('--legacy',
+                       action='store_true',
+                       default=False,
+                       help='''Installs the legacy images'''
+                       )
+    parser.add_argument('--list-revisions',
+                        action='store_true',
+                        required=False,
+                        default=False,
+                        help='List available revisions on cdimage and exits',
+                       )
+    parser.add_argument('--series',
+                        required=False,
+                        default=None,
+                        help='Forces a series, generally not needed',
+                       )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-r',
+                       '--revision',
+                       required=False,
+                       default=None,
+                       help='''Choose a specific release to install from 
+                               cdimage, the format is [series]/[rev].
+                               However for ubuntu-bootstrap it's a 
+                               relative number 0 being latest -1 being
+                               the previous version and so on''',
+                       )
+    group.add_argument('-l',
+                       '--latest-revision',
+                       action='store_true',
+                       required=False,
+                       help='''Pulls the latest tagged revision.''',
+                      )
+    group.add_argument('-p',
+                       '--base-path',
+                       required=False,
+                       default=None,
+                       help='''Installs from base path, you must have the
+                               same directory structure as if you downloaded
+                               for real.
+                               This option is completely offline.'''
+                      )
+    group.add_argument('-u',
+                       '--uri',
+                       required=False,
+                       help='Alternate download uri',
+                      )
+    group.add_argument('--pending',
+                       action='store_true',
+                       required=False,
+                       help='Get pending link from cdimage',
+                      )
+    parser.add_argument('--ubuntu-bootstrap',
+                        action='store_true',
+                        required=False,
+                        help='''Flash the image based upgrade Ubuntu system.
+                                This action wipes the system'''
+                       )
+    return parser.parse_args()
+
+
+# Creates a pathname for user's answer. Touch this file.
+def accepted_pathname():
+    return os.path.expanduser(settings.accept_path)
+
+
+def accepted(pathname):
+    '''
+    Remember that the user accepted the license.
+    '''
+    open(pathname, 'w').close()
+
+
+def has_accepted(pathname):
+    '''
+    Return True iff the user accepted the license once.
+    '''
+    return os.path.exists(pathname)
+
+
+def query(message):
+    '''Display end user agreement to continue with deployment.'''
+    try:
+        while True:
+            print message
+            print 'Do you accept? [yes|no]'
+            answer = raw_input().lower()
+            if answer == 'yes':
+                accepted(accepted_pathname())
+                return True
+            elif answer == 'no':
+                return False
+    except KeyboardInterrupt:
+        log.error('Interruption detected, cancelling install')
+        return False
+
+
+def setup_download_directory(download_dir):
+    '''
+    Tries to create the download directory from XDG_DOWNLOAD_DIR or sets
+    an alternative one.
+
+    Returns path to directory
+    '''
+    log.info('Download directory set to %s' % download_dir)
+    if not os.path.exists(download_dir):
+        log.info('Creating %s' % download_dir)
+        os.makedirs(download_dir)
+
+
+def adb_errors(f):
+    '''Decorating adb error management.'''
+    def _adb_errors(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except subprocess.CalledProcessError as e:
+            log.error('Error while executing %s' %
+                      e.cmd)
+            log.info('Make sure the device is connected and viewable '
+                    'by running \'adb devices\'')
+            log.info('Ensure you have a root device, one which running '
+                    '\'adb root\' does not return an error')
+            exit(1)
+    return _adb_errors
+
+
+@adb_errors
+def create_recovery_file(adb, device_img, ubuntu_file):
+    template = settings.recovery_script_template
+    # Setup recovery rules
+    recovery_file = tempfile.NamedTemporaryFile(delete=False)
+    # Find out version
+    current_version = adb.getprop('ro.modversion')
+    if current_version.startswith('10.1'):
+        log.debug('Updating from multi user setup')
+        sdcard_path = '/sdcard/0'
+    else:
+        log.info('Updating from non multi user setup')
+        sdcard_path = '/sdcard'
+    recovery_script = template.format(
+        sdcard_path,
+        path.basename(device_img),
+        path.basename(ubuntu_file))
+    with recovery_file as output_file:
+        output_file.write(recovery_script)
+    log.info('Setting up recovery rules')
+    return recovery_file.name
+
+
+def create_ubuntu_command_file(cache_dir, files):
+    ubuntu_command_path = os.path.join(cache_dir, 'ubuntu_command')
+    with open(ubuntu_command_path, 'w+') as output_file:
+        output_file.write(settings.ubuntu_recovery_script)
+        for f in files:
+            filename = os.path.basename(f['filename'])
+            signame = os.path.basename(f['signame'])
+            output_file.write('update %s %s\n' % (filename, signame))
+        output_file.write('unmount system\n')
+    return ubuntu_command_path
+
+
+@adb_errors
+def autodeploy(adb, artifact):
+    ''' Pushes artifact to devices sdcard and deploys'''
+    if not artifact:
+        return
+    # Can't wait-for-device here
+    sleep(15)
+    wipe_device(adb)
+    adb.push(artifact, '/sdcard/autodeploy.zip')
+    log.info('Deploying Ubuntu')
+    adb.reboot(recovery=True)
+    log.info('Installation will complete soon and reboot into Ubuntu')
+
+
+def gunzip(file_path):
+    if not file_path.endswith('.gz'):
+        return file_path
+    target_path = file_path[:-3]
+    log.info('Decompressing %s' % file_path)
+    with open(target_path, 'wb') as target_file:
+        with gzip.open(file_path, 'r') as gzip_file:
+            for chunk in gzip_file.read():
+                target_file.write(chunk)
+    return target_path
+        
+
+def wipe_device(adb):
+    log.info('Clearing /data and /cache')
+    adb.shell('rm -Rf /cache/* /data/* /data/.developer_mode')
+    adb.shell('mkdir /cache/recovery')
+    adb.shell('mkdir /data/media')
+
+
+@adb_errors
+def deploy_recovery_image(adb, device_zip, ubuntu_zip, recovery_file,
+                          wipe=False):
+    ''''
+    Deploys recovery files, recovery script and then reboots to install.
+    '''
+    if wipe:
+        wipe_device(adb)
+    adb.push(device_zip, '/sdcard/')
+    adb.push(ubuntu_zip, '/sdcard/')
+    adb.push(recovery_file, '/cache/recovery/command')
+    adb.reboot(recovery=True)
+    log.info('Once completed the device should reboot into Ubuntu')
+
+
+@adb_errors
+def detect_device(adb, device=None):
+    '''If no argument passed determine them from the connected device.'''
+    # Check CyanogenMod property
+    if not device:
+        device = adb.getprop('ro.cm.device').strip()
+    # Check Android property
+    if not device:
+        device = adb.getprop('ro.product.device').strip()
+    log.info('Device detected as %s' % device)
+    # property may not exist or we may not map it yet
+    if device not in settings.supported_devices:
+        log.error('Unsupported device, autodetect fails device')
+        log.info('When working on flipped images, detection does not '
+                 'work and would require -d')
+        exit(1)
+    return device
+
+
+@adb_errors
+def bootstrap(adb, fastboot, system_img, boot_img, recovery_img):
+    '''
+    Deploys device file using fastboot and launches recovery for ubuntu
+    deployment.
+    '''
+    adb.reboot(bootloader=True)
+    log.warning('The device needs to be unlocked for the following to work')
+
+    fastboot.flash('system', gunzip(system_img))
+    fastboot.flash('boot', boot_img)
+    if recovery_img:
+        fastboot.flash('recovery', recovery_img)
+        fastboot.boot(recovery_img)
+    else:
+        log.info('Successfully flashed, now rebooting device')
+        fastboot.reboot()
+
+
+@adb_errors
+def validate_device(adb):
+    '''
+    Validates if the image would be installable on the target
+    '''
+    df = adb.shell('df -h').split('\n')
+    try:
+        free_data = map(str.split,
+                        filter(lambda s: '/data' in s, df))[0][2]
+    except IndexError:
+        log.error('Cannot find /data mountpoint')
+        adb.reboot()
+        exit(1)
+    if free_data[-1:] == 'G' and float(free_data[:-1]) >= 3:
+        log.info('Storage requirements in /data satisfied')
+    else:
+        log.error('Not enough space in /data, found %s, rebooting', free_data)
+        adb.reboot()
+        exit(1)
+
+
+@adb_errors
+def setup_ubuntu_image_update(device, revision=-1):
+    '''
+    Sets up as described in https://wiki.ubuntu.com/ImageBasedUpgrades.
+    '''
+    # This is temporary until more commonality is found.
+    json_latest = ubuntuimage.get_json_from_index(device, revision)
+    download_dir = environment.get_download_dir_full_path(
+        os.path.join(settings.download_dir,'imageupdates',
+            str(json_latest['version'])))
+    setup_download_directory(download_dir)
+    files = ubuntuimage.download_images(download_dir, json_latest)
+    ubuntu_command_path = create_ubuntu_command_file(download_dir,
+        files['updates'])
+    return files, ubuntu_command_path
+
+
+def deploy_ubuntu_image_update(adb, fastboot, recovery_img, files, 
+                               ubuntu_command_path):
+    adb.reboot(recovery=True)
+    wipe_device(adb)
+    for key in files:
+        for entry in files[key]:
+            adb.push(entry['filename'], '/cache/recovery/')
+            adb.push(entry['signame'], '/cache/recovery/')
+    adb.push(ubuntu_command_path, '/cache/recovery/ubuntu_command')
+    adb.reboot(bootloader=True)
+    fastboot.flash('recovery', recovery_img)
+    fastboot.boot(recovery_img)
+
+
+def main(args):
+    if args.legacy and args.pending:
+        log.error('Cannot use legacy and pending together')
+        exit(1)
+    if args.ubuntu_bootstrap and args.revision:
+        ubuntu_revision = int(args.revision) - 1
+        if ubuntu_revision >= 0:
+            log.error('Revision must be 0 for current or negative number')
+            exit(1)
+        args.revision = None
+    else:
+        ubuntu_revision = -1
+    if args.list_revisions:
+        # Easy hack to get rid of the logger and inhibit requests from logging
+        log.setLevel(logging.FATAL)
+        env = environment.Environment(args.uri, None, args.series, 
+            args.latest_revision, args.revision, args.pending,  args.legacy, 
+            args.base_path, settings)
+        env.project.list_revisions()
+        exit(0)
+    if not has_accepted(accepted_pathname()) and \
+       not query(settings.legal_notice):
+        exit(1)
+    adb = AndroidBridge(args.serial)
+    fastboot = Fastboot(args.serial)
+    # Initializes the adb server if it is not running
+    adb.start()
+    device = detect_device(adb, args.device)
+    try:
+        env = environment.Environment(args.uri, device, args.series, 
+            args.latest_revision, args.revision, args.pending,  args.legacy, 
+            args.base_path, settings)
+    except EnvironmentError as e:
+        log.error(e.message)
+        exit(1)
+    log.info('Download uri set to %s' % env.download_uri)
+    if env.download_uri:
+        setup_download_directory(env.download_dir)
+    download_list = []
+    if args.ubuntu_bootstrap:
+        download_list.append(env.recovery_img_path)
+    elif args.bootstrap:
+        [download_list.append(f) for f in env.bootstrap_files]
+    else:
+        [download_list.append(f) for f in env.recovery_files]
+    try:
+        if env.project:
+            hashes = env.project.hashes
+        else:
+            hashes = None
+        log.info('Retrieving files')
+        downloader = downloads.Downloader(env.download_uri,
+            download_list, hashes)
+        downloader.download()
+    except KeyboardInterrupt:
+        log.info('To continue downloading in the future, rerun the same '
+                 'command')
+        exit(1)
+    except EnvironmentError as e:
+        log.error(e.message)
+        exit(1)
+    except subprocess.CalledProcessError:
+        log.error('Error while downloading, ensure connection')
+        exit(1)
+    if env.download_uri and env.project:
+        env.store_hashes()
+    if not args.download_only:
+        if args.ubuntu_bootstrap:
+            ubuntu_files, ubuntu_command_path = \
+                setup_ubuntu_image_update(device, ubuntu_revision) 
+            deploy_ubuntu_image_update(adb, fastboot, env.recovery_img_path,
+                ubuntu_files, ubuntu_command_path)
+        elif args.bootstrap:
+            bootstrap(adb, fastboot, env.system_img_path,
+                env.boot_img_path, env.recovery_img_path)
+            autodeploy(adb, env.ubuntu_zip_path)
+        else:
+            adb.reboot(recovery=True)
+            validate_device(adb)
+            recovery_file = create_recovery_file(adb, 
+                env.device_zip_path, env.ubuntu_zip_path)
+            deploy_recovery_image(adb, env.device_zip_path,
+                env.ubuntu_zip_path, recovery_file, args.wipe)
+
+
+def import_alt_settings(alternate_settings):
+    import imp
+    global settings
+    dirname, basename = os.path.split(alternate_settings)
+    f, filename, desc = imp.find_module(basename.rstrip('\.py'), [dirname])
+    settings = imp.load_module(basename.rstrip('\.py'), f, filename, desc)
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    if args.alternate_settings:
+        import_alt_settings(args.alternate_settings)
+    main(args)

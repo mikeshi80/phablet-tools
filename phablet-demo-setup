@@ -1,0 +1,119 @@
+#! /usr/bin/python
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the the GNU General Public License version 3, as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranties of
+# MERCHANTABILITY, SATISFACTORY QUALITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the applicable version of the GNU Lesser General Public
+# License for more details.
+#.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Copyright (C) 2013 Canonical, Ltd.
+
+import argparse
+import logging
+import tempfile
+import StringIO
+from phabletutils.device import AndroidBridge
+
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+log = logging.getLogger()
+log.name = 'phablet-demo-setup'
+
+
+basic_template = '''#!/bin/sh
+set -ex
+apt-get update
+'''
+
+def parse_arguments():
+    '''Parses arguments passed in to script.'''
+    parser = argparse.ArgumentParser(
+        description='''phablet demo setup tool. Requires a prior run
+                       of phablet-networking-setup -i. If called with
+                       no options all demo content available is setup.''')
+    parser.add_argument('-s',
+                        '--serial',
+                        help='''Device serial. Use when more than
+                                one device is connected.''',
+                        )
+    parser.add_argument('--disable-fake-contacts',
+                        action='store_true',
+                        required=False,
+                        default=False,
+                        help='Disables setup of demo contacts.'
+                        )
+    parser.add_argument('--disable-fake-messages',
+                        action='store_true',
+                        required=False,
+                        default=False,
+                        help='Disables setup of demo messages.'
+                        )
+    parser.add_argument('--disable-fake-pictures',
+                        action='store_true',
+                        required=False,
+                        default=False,
+                        help='Disables setup of demo pictures.'
+                        )
+    return parser.parse_args()
+
+
+def setup_fake_pictures(script):
+    script.write('tar -C /home/phablet/Pictures/ --strip-components=1 -xzf '
+               '/usr/share/demo-assets/pictures.tgz\n')
+    script.write('chown -R phablet:phablet /home/phablet/Pictures\n')
+    return script
+
+
+def setup_fake_conversations(script):
+    script.write('mkdir -p /home/phablet/.local/share/TpLogger/logs\n')
+    script.write('cp -aRp '
+                 '/usr/share/demo-assets/telephony-app/ofono_ofono_account0 '
+                 '/home/phablet/.local/share/TpLogger/logs\n')
+    script.write('chown -R phablet.phablet /home/phablet/.local/\n')
+    return script
+
+
+def provision_device(serial, script):
+    script_dst = '/data/ubuntu/tmp/provision'
+    if serial:
+        adb = AndroidBridge(serial)
+    else:
+        adb = AndroidBridge()
+    adb.root()
+    adb.push(script, script_dst)
+    adb.chmod(script_dst, '700')
+    adb.chroot('tmp/provision')
+    log.info('Getting ready to restart')
+    adb.shell('sync')
+    adb.reboot()
+
+
+def main(args):
+    script = StringIO.StringIO()
+    script.write(basic_template)
+    if not args.disable_fake_contacts:
+        log.info('Setting up for demo contacts')
+        script.write('/usr/bin/apt-get install -y demo-assets-contacts\n')
+        script = setup_fake_conversations(script)
+    if not args.disable_fake_messages:
+        log.info('Setting up for demo message notifications')
+        script.write('/usr/bin/apt-get install -y indicators-client-examples\n')
+    if not args.disable_fake_pictures:
+        log.info('Setting up for demo pictures')
+        script.write('/usr/bin/apt-get install -y demo-assets-pictures\n')
+        script = setup_fake_pictures(script)
+    script_file = tempfile.NamedTemporaryFile(delete=False) 
+    with script_file as f:
+        f.write(script.getvalue())
+    script.close() 
+    provision_device(args.serial, script_file.name)
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    main(args)

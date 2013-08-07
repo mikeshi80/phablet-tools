@@ -1,0 +1,188 @@
+#!/bin/bash
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the the GNU General Public License version 3, as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranties of
+# MERCHANTABILITY, SATISFACTORY QUALITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the applicable version of the GNU General Public
+# License for more details.
+#.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Copyright (C) 2012 Canonical, Ltd.
+
+export LC_ALL=C
+
+usage() {
+cat <<EOF
+usage: $0 [OPTIONS]
+
+Copies ACTIVE network manager connection into device
+
+OPTIONS:
+  -h	Show this message
+  -s    Specify the serial of the device to install (see adb $ADBOPTS devices)
+  -i    Install helper network packages (openssh-server, iw) in chroot
+  -n    Select network file
+
+EOF
+}
+
+ADBOPTS=""
+OPTION_SSH=0
+OPTION_NETWORK_FILE=""
+CHROOTDIR="/data/ubuntu"
+CHROOTCMD="chroot $CHROOTDIR"
+
+while getopts "hin:s:" OPTION
+do
+    case $OPTION in
+        h)
+            usage
+            exit 1
+            ;;
+        n)
+            OPTION_NETWORK_FILE="$OPTARG"
+            ;;
+        i)
+            OPTION_SSH=1
+            ;;
+        s)
+            ADBOPTS="-s $OPTARG"
+            ;;
+        ?)
+            usage
+            exit
+            ;;
+    esac
+done
+shift $(($OPTIND - 1))
+
+NETWORK_MANAGER=/etc/NetworkManager/system-connections
+USER=phablet
+
+is_flipped() {
+    # Checks if the devices uses a flipped image
+    #
+    # @return: 0 if image is flipped 1 otherwise
+    [ -n "$(adb $ADBOPTS shell "ls /etc/lsb-release 2>/dev/null")" ] && return 0
+    return 1
+}
+
+get_user_id() {
+    adb $ADBOPTS shell $CHROOTCMD /usr/bin/id -u $1 | tr -d '\r'
+}
+
+install_ssh_key() {
+    HOME_DIR=$CHROOTDIR/home/$USER
+    USER_ID=$(get_user_id $USER)
+    adb $ADBOPTS push ~/.ssh/id_rsa.pub $HOME_DIR/.ssh/authorized_keys
+    adb $ADBOPTS shell chown $USER_ID:$USER_ID $HOME_DIR/.ssh
+    adb $ADBOPTS shell chown $USER_ID:$USER_ID $HOME_DIR/.ssh/authorized_keys
+    adb $ADBOPTS shell chmod 700 $HOME_DIR/.ssh
+    adb $ADBOPTS shell chmod 600 $HOME_DIR/.ssh/authorized_keys
+}
+
+find_active_network() {
+    wireless_adapter="$(nmcli -t -f device,type dev | egrep wireless | cut -d: -f1)"
+    network_active_uuid="$(nmcli -t -f name,uuid,devices,vpn con status | grep $wireless_adapter | egrep ":no$"| cut -d: -f2)"
+    network_file=$(sudo grep "$network_active_uuid" $NETWORK_MANAGER/* | grep uuid | cut -d: -f1)
+
+    if [ -z "$network_active_uuid" ]
+    then
+        echo "No active wifi network connection, exiting"
+        exit 1
+    fi
+    echo "$network_file"
+}
+
+if is_flipped; then
+    echo Ubuntu is root
+    CHROOTDIR=""
+    CHROOTCMD=""
+fi
+
+if [ -z "$OPTION_NETWORK_FILE" ]; then
+    network_file=$(find_active_network)
+else
+    network_file=$OPTION_NETWORK_FILE
+fi
+
+if [ ! -f "$network_file" ]
+then
+    echo "Network connection file \"$network_file\" cannot be read"
+    exit 1
+fi
+
+echo Network file is $network_file
+
+TMP_FILE=$(mktemp)
+sudo grep -v mac-address "$network_file" > $TMP_FILE
+
+echo Provisioning network file to device
+adb $ADBOPTS root
+adb $ADBOPTS wait-for-device
+target_network_file=$CHROOTDIR/$NETWORK_MANAGER/active_ws_connection.conf
+adb $ADBOPTS push $TMP_FILE $target_network_file
+adb $ADBOPTS shell "chmod 600 $target_network_file"
+
+rm -f $TMP_FILE
+
+echo
+echo Network setup complete
+
+if [ $OPTION_SSH -eq 1 ]; then
+    TMP_FILE=$(mktemp)
+    # Indentation is going to be ugly here
+    cat > $TMP_FILE << 'EOF'
+#!/bin/bash
+export PATH="/sbin:/usr/sbin:/bin:/usr/bin" 
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install --yes --quiet openssh-server iw
+EOF
+
+    echo Installing ssh
+    nmcli_cmd="adb $ADBOPTS shell $CHROOTCMD $CHROOTDIR/usr/bin/nmcli"
+    wait=0
+    iface=$($nmcli_cmd -t -f devices con status | tr -d '\r')
+    until [ -n "$iface" ] || [ $wait -eq 10 ]; do
+        echo "Network not ready, sleeping"
+        sleep $(( wait++ ))
+        iface=$($nmcli_cmd -t -f devices con status | tr -d '\r')
+    done
+    if [ -z "$iface" ]; then
+        echo "Network setup timed out"
+        exit 1
+    fi
+    wait=0
+    ip_data=$($nmcli_cmd -t dev list iface $iface | grep ADDRESS)
+    until [ -n "$ip_data" ] || [ $wait -eq 10 ]; do
+        echo "Network not ready, sleeping"
+        sleep $(( wait++ ))
+        ip_data=$($nmcli_cmd -t dev list iface $iface | grep ADDRESS)
+    done
+    if [ -z "$ip_data" ]; then
+        echo "Network setup timed out"
+        exit 1
+    fi
+    adb $ADBOPTS push $TMP_FILE $CHROOTDIR/$TMP_FILE
+    adb $ADBOPTS shell chmod 755 $CHROOTDIR/$TMP_FILE
+    adb $ADBOPTS shell $CHROOTCMD $CHROOTDIR/$TMP_FILE
+
+    rm -f $TMP_FILE
+
+    echo "Installing ssh keys"
+    install_ssh_key
+
+    echo
+    echo openssh-server install complete, to connect execute
+    echo adb $ADBOPTS forward tcp:PORT tcp:22
+    echo with a proper PORT, e.g.\; 8888
+    echo i.e.\; adb $ADBOPTS forward tcp:8888 tcp:22
+    echo then ssh phablet@localhost -p 8888
+fi
+

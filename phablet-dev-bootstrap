@@ -1,0 +1,168 @@
+#! /usr/bin/env python2.7
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the the GNU General Public License version 3, as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranties of
+# MERCHANTABILITY, SATISFACTORY QUALITY or FITNESS FOR A PARTICULAR
+# PURPOSE.  See the applicable version of the GNU General Public
+# License for more details.
+#.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Copyright (C) 2013 Canonical, Ltd.
+
+# TODO Install packages
+# TODO improve bzr branch setup
+# TODO allow new vendor setup from existing repo
+
+import argparse
+import logging
+import os
+import subprocess
+from os import path
+
+logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger()
+log.name = 'phablet-dev-bootstrap'
+
+repo_init = 'git://phablet.ubuntu.com/CyanogenMod/android.git'
+repo_branch = 'phablet-10.1'
+valid_vendors = ('maguro', 'mako', 'manta', 'grouper')
+ubuntu_dir = 'ubuntu'
+
+branches = {
+    'ubuntu/platform-api': 'lp:platform-api',
+}
+
+
+class StringSplitAction(argparse.Action):
+     def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values.split(','))
+
+
+def validate_vendors(vendors):
+    for vendor in vendors:
+        if vendor not in valid_vendors:
+            log.error('Vendor device %s not supported' % vendor)
+            exit(1)
+
+
+def setup_sync_dir(target_directory, continue_sync=False):
+    '''Creates and changes to target directory'''
+    if not continue_sync:
+        try:
+            if os.path.isfile(target_directory):
+                raise OSError('%s is not a directory' %
+                             target_directory)
+            elif not os.path.isdir(target_directory):
+                log.debug('Creating sync directory %s' % target_directory)
+                os.mkdir(target_directory)
+            elif os.listdir(target_directory):
+                raise OSError('%s is not empty and not using -c' %
+                             target_directory)
+        except OSError as e:
+            if not e.message:
+                log.error('Cannot setup environment in %s' % 
+                          target_directory)
+            else:
+                log.error(e.message)
+            exit(1)
+    log.info('Changing to workdir %s' % target_directory)
+    os.chdir(target_directory)
+
+
+def sync_repository(jobs='1', reference=None):
+    '''Syncs android sources with the repo command'''
+    try:
+        log.info('Initializing repository')
+        init_cmd = ['repo', 'init',
+                    '-u', repo_init, '-b', repo_branch]
+        if reference:
+            init_cmd += ['--reference', reference]
+        subprocess.check_call(init_cmd)
+        subprocess.check_call(['repo',
+                               'sync',
+                               '-j%s' % jobs]
+                             )
+    except subprocess.CalledProcessError:
+        log.error('Error while trying to sync repository')
+        exit(1)
+
+
+def branch_target(repo, target_directory):
+    if not path.exists(target_directory):
+        cmd = 'bzr branch %s %s' % (repo, target_directory)
+        log.info('Branching %s into %s' % (repo, target_directory))
+        subprocess.check_call(cmd, shell=True)
+    else:
+        # Might be a good idea to pull for vendor branches
+        log.warning('Skipping %s, already branched' % target_directory)
+
+
+def sync_vendors(vendors):
+    cmd = '''. build/envsetup.sh'''
+    for vendor in vendors:
+        cmd += '; breakfast %s' % vendor
+    log.debug('Executing %s' % cmd)
+    subprocess.check_call(cmd, shell=True, executable='/bin/bash')
+
+
+def setup_branches():
+    if not path.exists(ubuntu_dir):
+        os.mkdir(ubuntu_dir)
+    for branch in branches.keys():
+        branch_target(branches[branch], branch)
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description='Phablet Development Environment Setup Tool')
+    parser.add_argument('-v',
+                        '--vendors',
+                        dest='vendors',
+                        help='''Comma separated list of devices to Setup
+                        such as maguro, manta, mako, grouper''',
+                        action=StringSplitAction,
+                       )
+    parser.add_argument('-j',
+                        '--jobs',
+                        dest='jobs',
+                        help='''Ammount of sync jobs''',
+                        default='1',
+                       )
+    parser.add_argument('-c',
+                        '--continue',
+                        dest='continue_sync',
+                        action='store_true',
+                        help='''Continue a previously started sync''',
+                        default=False,
+                       )
+    parser.add_argument('-r',
+                        '--reference',
+                        help='''Use another dev environment as reference for git''',
+                        default='',
+                       )
+    parser.add_argument('target_directory',
+                        help='Target directory for sources',
+                       )
+    return parser.parse_args()
+
+
+def main(args):
+    if args.vendors:
+        validate_vendors(args.vendors)
+    setup_sync_dir(path.abspath(path.expanduser(args.target_directory)),
+                   args.continue_sync)
+    sync_repository(args.jobs, args.reference)
+    if args.vendors:
+        sync_vendors(args.vendors)
+    setup_branches()
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    main(args)
+
