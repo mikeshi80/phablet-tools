@@ -29,7 +29,10 @@ def download(uri, target):
     log.info('Downloading %s' % uri)
     if uri.startswith('http://cdimage.ubuntu.com') or \
        uri.startswith('https://system-image.ubuntu.com'):
-        subprocess.check_call(['wget', '-c', uri, '-O', target])
+        try:
+          subprocess.check_call(['wget', '-c', uri, '-O', target])
+        except:
+          subprocess.check_call(['curl', '-L', '-C', '-', uri, '-o', target])
     else:
         subprocess.check_call(['curl', '-L', '-C', '-', uri, '-o', target])
 

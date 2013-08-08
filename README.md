@@ -60,6 +60,7 @@ Fourth, download msys from here http://sourceforge.net/projects/mingw/files/late
 Do not select any options since we do not need them. After installation completed, go to install dir (assume it is C:\MingGW), go to bin dir, and run
 
     mingw-get install msys-rsync
+
     mingw-get install msys-wget-bin
 
 And you should add msys dir (maybe C:\MinGW\msys\1.0\bin) to your PATH variable.
