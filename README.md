@@ -35,3 +35,28 @@ For Python, it need requests and configobj modules, you can install them use `ez
 Install 
 --------
 Please refer to this link https://wiki.ubuntu.com/Touch/Install
+
+For Windows Users
+-----------------
+
+After you install the Python (Assume you installed it on C:\Python27), we need do something to make you flash your device easier.
+
+Firstly, add the Python install dir (C:\Python27) and scripts dir (C:\Python27\Scripts) to your PATH environment variable.
+
+Second, install `ez_setup` module, please follow this tutorial
+
+Third, run
+    easy_install phablet-tools
+to install phablet-tools.
+
+Fourth, download msys from here http://sourceforge.net/projects/mingw/files/latest/download?source=files
+
+Do not select any options since we do not need them. After installation completed, go to install dir (assume it is C:\MingGW), go to bin dir, and run
+    mingw-get install msys-rsync
+    mingw-get install msys-wget-bin
+And you should add msys dir (maybe C:\MinGW\msys\1.0\bin) to your PATH variable.
+
+Fifth, download the Android SDK and unzip it, add the dir which contains adb.exe and fastboot.exe to PATH variable.
+
+And now, you can follow the Install above to install Ubuntu Touch to your device.
+    
