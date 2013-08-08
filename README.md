@@ -43,13 +43,17 @@ After you install the Python (Assume you installed it on C:\Python27), we need d
 
 Firstly, add the Python install dir (C:\Python27) and scripts dir (C:\Python27\Scripts) to your PATH environment variable.
 
-Second, install `ez_setup` module, please follow this tutorial
+Second, install `ez_setup` module, please follow this tutorial https://pypi.python.org/pypi/setuptools/0.9.8#windows
 
 Third, run
 
     easy_install phablet-tools
 
 to install phablet-tools.
+
+After install phablet-tools, you could create the phablet-flash.cmd in the C:\Python27\Scripts directory, the contents like following. This step will make you easy when you following the Install instruction.
+
+    python C:\Python27\Scripts\phablet-flash %1 %2 %3
 
 Fourth, download msys from here http://sourceforge.net/projects/mingw/files/latest/download?source=files
 
