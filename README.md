@@ -46,7 +46,9 @@ Firstly, add the Python install dir (C:\Python27) and scripts dir (C:\Python27\S
 Second, install `ez_setup` module, please follow this tutorial
 
 Third, run
+
     easy_install phablet-tools
+
 to install phablet-tools.
 
 Fourth, download msys from here http://sourceforge.net/projects/mingw/files/latest/download?source=files
