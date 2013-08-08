@@ -15,6 +15,9 @@ local.properties
 .classpath
 .settings/
 .loadpath
+build/
+dist/
+phablet_tools.egg-info/
 
 # External tool builders
 .externalToolBuilders/
