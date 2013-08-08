@@ -1,12 +1,16 @@
 phablet-tools
 =============
 
-#Abstract
+Abstract
+---------
 This is the modified version of phablet-tools based on July 30, 2013 version (phablet-tools-0.15+13.10.20130730).
+
+The original version is http://ppa.launchpad.net/phablet-team/tools/ubuntu/pool/main/p/phablet-tools/
 
 Phablet-tools is a tool for installing the Ubuntu Touch OS into your mobile devices (Currently, only Nexus S, Nexus 4, Nexus 7 and Nexus 10 are supported officially)
 
-#Motivation
+Motivation
+----------
 
 Now Phablet-tools only can run on the Ubuntu, it is, somehow, inconvenient for guys who can not access Ubuntu, like me, I only can use Windows 7 in my office. 
 
@@ -14,7 +18,8 @@ So I tried to read the source code to find out whether it can be ported to other
 
 I modified a little code in the  phabletutils/environment.py, and setup this repository, I hope it can be helpful for the guys who want to try Ubuntu Touch without Ubuntu System , I know it sounds some-kind weird, ;-).
 
-#Requirement
+Requirement
+-----------
 
 Because Phablet-tools need some dependencies, you need install them by yourself.
 
@@ -25,7 +30,8 @@ Because Phablet-tools need some dependencies, you need install them by yourself.
 
 Remember, all of them need to be added into PATH environment variable.
 
-For Python, it need requests and configobj modules, you can install them use ez_setup tools.
+For Python, it need requests and configobj modules, you can install them use `ez_setup` tools.
 
-#Install 
+Install 
+--------
 Please refer to this link https://wiki.ubuntu.com/Touch/Install

@@ -43,8 +43,9 @@ def download_images(download_dir, json_list):
         signame_path = os.path.join(download_dir, signame)
         filename_uri = '%s/%s' % (settings.system_image_uri, entry['path'])
         signame_uri = '%s/%s' % (settings.system_image_uri, entry['signature'])
-        downloads.download(filename_uri, filename_path)
-        downloads.download(signame_uri, signame_path)
+        with downloads.flocked(filename_path):
+            downloads.download(filename_uri, filename_path)
+            downloads.download(signame_uri, signame_path)
         files['updates'].append({'filename': filename_path,
                                  'signame': signame_path})
     files['base'] = []
@@ -55,8 +56,9 @@ def download_images(download_dir, json_list):
         signame_path = os.path.join(download_dir, signame)
         filename_uri = '%s/gpg/%s' % (settings.system_image_uri, filename)
         signame_uri = '%s.asc' % filename_uri
-        downloads.download(filename_uri, filename_path)
-        downloads.download(signame_uri, signame_path)
+        with downloads.flocked(filename_path):
+            downloads.download(filename_uri, filename_path)
+            downloads.download(signame_uri, signame_path)
         files['base'].append({'filename': filename_path,
                               'signame': signame_path})
     return files

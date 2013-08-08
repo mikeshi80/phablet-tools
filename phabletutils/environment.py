@@ -35,7 +35,7 @@ def get_download_dir_full_path(subdir):
     #except KeyError:
     #    download_dir = path.expandvars('$HOME')
     #    log.warning('XDG_DOWNLOAD_DIR could not be read')
-    download_dir = expanduser("~")
+    download_dir = expanduser('~')
     return path.join(download_dir, subdir)
 
 
@@ -83,12 +83,12 @@ class Project(object):
     def series(self):
         return self._series
 
-    @property
     def hashes(self):
-        return cdimage.get_sha256_dict(self._hash_content)
+        return cdimage.get_sha256_dict(self.hash_content)
 
     @property
     def hash_content(self):
+        self._load_hashes()
         return self._hash_content
 
     @property
@@ -143,9 +143,8 @@ class Project(object):
             download_dir = path.join(project, link)
         self._download_uri = download_uri
         self._download_dir = download_dir
-        self._setup_hashes()
 
-    def _setup_hashes(self):
+    def _load_hashes(self):
         self._hash_path = path.join(self._download_dir, self._hash_file_name)
         if path.exists(self._hash_path):
             with open(self._hash_path, 'r') as f:

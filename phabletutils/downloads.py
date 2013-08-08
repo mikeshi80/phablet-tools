@@ -13,6 +13,8 @@
 #
 # Copyright (C) 2013 Canonical, Ltd.
 
+#import contextlib
+#import fcntl
 import hashlib
 import logging
 import os
@@ -32,6 +34,18 @@ def download(uri, target):
         subprocess.check_call(['curl', '-L', '-C', '-', uri, '-o', target])
 
 
+#@contextlib.contextmanager
+#def flocked(lockfile):
+#    lockfile += '.lock'
+#    with open(lockfile, 'w') as f:
+#        log.debug('aquiring lock for %s', lockfile)
+#        try:
+#            fcntl.lockf(f, fcntl.LOCK_EX)
+#            yield
+#        finally:
+#            fcntl.lockf(f, fcntl.LOCK_UN)
+
+
 class Downloader(object):
     '''A helper to fetch multiple artifacts.'''
 
@@ -48,27 +62,30 @@ class Downloader(object):
     def download(self):
         '''Downloads and validates the download list.'''
         for file_path in self._download_list:
+            #with flocked(file_path):
             if self.validate(file_path):
                 continue
             uri = '%s/%s' % (self._uri, os.path.basename(file_path))
             if not uri:
-                raise EnvironmentError('In offline mode and checksum does '
-                                       'not match for at least %s' % file_path)
+                fmt = ('In offline mode and checksum does not match '
+                       'for at least %s')
+                raise EnvironmentError(fmt % file_path)
             download(uri, file_path)
             if not self._hashes:
                 file_hash = '%s.md5sum'
                 download(file_hash % uri, file_hash % file_path)
             if not self.validate(file_path):
-                raise EnvironmentError('File download failed for %s to %s' %
-                                       (uri, file_path))
+                fmt = 'File download failed for %s to %s'
+                raise EnvironmentError(fmt % (uri, file_path))
             log.info('Validating download of %s' % file_path)
 
     def _validate(self, file_path):
         '''Validates downloaded files against a checksum.'''
         file_name = os.path.basename(file_path)
-        if file_name not in self._hashes:
+        hashes = self._hashes()
+        if file_name not in hashes:
             return False
-        return self.checksum_file(file_path) == self._hashes[file_name]
+        return self.checksum_file(file_path) == hashes[file_name]
 
     def _validate_legacy(self, file_path):
         '''Validates with the legacy method of individual md5sum files.'''

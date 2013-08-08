@@ -5,9 +5,8 @@ from setuptools import setup
 
 setup(
     name='phablet-tools',
-    version='0.1',
+    version='0.1.2013080602',
     description='Scripts to deploy Ubuntu on mobile devices',
-    long_description=open('README.md').read(),
     author='Sergio Schvezov',
     author_email='sergio.schvezov@canonical.com',
     maintainer='Mike Shi',
