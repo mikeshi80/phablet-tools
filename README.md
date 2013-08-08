@@ -2,7 +2,7 @@ phablet-tools
 =============
 
 #Abstract
-This is the modified version of phablet-tools.
+This is the modified version of phablet-tools based on July 30, 2013 version (phablet-tools-0.15+13.10.20130730).
 
 Phablet-tools is a tool for installing the Ubuntu Touch OS into your mobile devices (Currently, only Nexus S, Nexus 4, Nexus 7 and Nexus 10 are supported officially)
 
