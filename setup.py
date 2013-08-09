@@ -16,7 +16,6 @@ setup(
     license='GPLv3',
     platforms=['Windows', 'Linux', 'Mac OSX'],
     packages=find_packages(exclude=("tests",)),
-    data_files=[('', ['*.md'])],
     install_requires=['requests', 'configobj'],
     scripts=['phablet-flash',
              'phablet-demo-setup',
