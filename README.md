@@ -24,7 +24,7 @@ Requirement
 Because Phablet-tools need some dependencies, you need install them by yourself.
 
 1. Python 2.X, I recommend you to install 2.7, I just test it on 2.7.5.
-2. ADB tools (including adb.exe and fastboot.exe, I think it will not be a problem for you)
+2. ADB tools (including adb.exe and fastboot.exe, I think it will not be a problem for you, for Mac OSX user, you can refer to here https://code.google.com/p/adb-fastboot-install/)
 3. wget and rsync, it need to be installed on Windows, and for Mac, it seems it is out of box. (I am not sure since I installed MacPorts)
 4. USB drivers for your device, I believe it will not be another problem for you, just google it.
 
