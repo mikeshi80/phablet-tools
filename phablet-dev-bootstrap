@@ -28,8 +28,8 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger()
 log.name = 'phablet-dev-bootstrap'
 
-repo_init = 'git://phablet.ubuntu.com/CyanogenMod/android.git'
-repo_branch = 'phablet-10.1'
+repo_init = 'https://code-review.phablet.ubuntu.com/p/aosp/platform/manifest.git'
+repo_branch = 'phablet-4.4.2_r1'
 valid_vendors = ('maguro', 'mako', 'manta', 'grouper')
 ubuntu_dir = 'ubuntu'
 
